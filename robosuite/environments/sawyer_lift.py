@@ -1,5 +1,8 @@
 from collections import OrderedDict
 import numpy as np
+from argparse import Namespace
+import torch
+from PIL import Image
 
 from robosuite.utils.transform_utils import convert_quat
 from robosuite.environments.sawyer import SawyerEnv
@@ -8,6 +11,16 @@ from robosuite.models.arenas import TableArena
 from robosuite.models.objects import BoxObject
 from robosuite.models.robots import Sawyer
 from robosuite.models.tasks import TableTopTask, UniformRandomSampler
+
+
+import sys
+sys.path.append('.')
+sys.path.append('./roboturk_sim2real')
+sys.path.append('./roboturk_sim2real/models')
+sys.path.append('./roboturk_sim2real/options')
+
+from .roboturk_sim2real.models import *
+from .roboturk_sim2real.data.base_dataset import get_transform
 
 
 class SawyerLift(SawyerEnv):
@@ -95,6 +108,42 @@ class SawyerLift(SawyerEnv):
 
             camera_depth (bool): True if rendering RGB-D, and RGB otherwise.
         """
+        opt = Namespace(batch_size=1, beta1=0.5,
+                        checkpoints_dir='./checkpoints',
+                        continue_train=True, crop_size=256,
+                        dataroot='./datasets/positions_textured_normal/',
+                        dataset_mode='positions', direction='AtoB',
+                        epoch='latest', epoch_count=1, gan_mode='lsgan',
+                        gpu_ids=[],
+                        init_gain=0.02, init_type='normal', input_nc=3,
+                        input_type=None, isTrain=False, lambda_A=10.0,
+                        lambda_B=10.0,
+                        lambda_identity=0.5, load_iter=0, load_size=256,
+                        lr=0.0002,
+                        lr_decay_iters=50, lr_policy='linear',
+                        model='cycle_gan', n_layers_D=3,
+                        name='resnet_paired_weak_discrim', ndf=64, netD='basic',
+                        netG='resnet_9blocks', ngf=64, niter=100,
+                        niter_decay=100,
+                        no_dropout=True, no_flip=True, no_html=False,
+                        norm='instance',
+                        num_threads=4, output_nc=3, phase='train', pool_size=50,
+                        position_aux_loss=False, preprocess='resize_and_crop',
+                        print_freq=1, save_by_iter=False, save_epoch_freq=1,
+                        save_latest_freq=500, segmentation_weight=False,
+                        serial_batches=False, suffix='', update_html_freq=1000,
+                        verbose=False)
+
+        opt.num_threads = 0  # test code only supports num_threads = 1
+        opt.batch_size = 1  # test code only supports batch_size = 1
+        opt.no_flip = True  # no flip; comment this line if results on flipped images are needed.
+        opt.display_id = -1  # no visdom display;
+        opt.dataroot = '.'
+
+        self.deeplearning_model = create_model(opt)
+        self.deeplearning_model.eval()
+
+        self.transform = get_transform(opt, grayscale=False)
 
         # settings for table top
         self.table_full_size = table_full_size
@@ -273,10 +322,12 @@ class SawyerLift(SawyerEnv):
                 height=self.camera_height,
                 depth=self.camera_depth,
             )
-            if self.camera_depth:
-                di["image"], di["depth"] = camera_obs
-            else:
-                di["image"] = camera_obs
+            print("read image")
+            img = Image.fromarray(camera_obs[::-1]).convert('RGB')
+            img.save('/Users/aqua/ppo_out.png')
+            img_tensor = self.transform(img)
+            latent_volume = self.deeplearning_model.netG_A.latent_model(img_tensor.view((1, 3, 256, 256)))
+            di["image"] = latent_volume.detach().numpy().squeeze()
 
         # low-level object information
         if self.use_object_obs:
